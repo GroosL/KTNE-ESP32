@@ -17,6 +17,13 @@ O sistema opera de forma **desacoplada e orientada a eventos**, visando estabili
 
 ---
 
+---
+## 2. Possiveis alterações
+
+1. Geração e envio do serial da bomba no começo de cada jogo pela central
+
+---
+
 ## 3. Especificação dos Tópicos MQTT
 
 ### 3.1. Estado Global da Partida (Central $\to$ Todos)
