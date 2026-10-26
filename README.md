@@ -104,10 +104,10 @@ Snippet pronto para ESP32 compatível com a biblioteca `PubSubClient`:
 // Defina o número do seu grupo aqui (de "2" a "7")
 #define MODULO_ID "2"
 
-const char* WIFI_SSID     = "NOME_DO_WIFI";
-const char* WIFI_PASSWORD = "SENHA_DO_WIFI";
-const char* MQTT_BROKER   = "192.168.1.100";
-const int   MQTT_PORT     = 1883;
+constexpr char* WIFI_SSID     = "iot2026";
+constexpr char* WIFI_PASSWORD = "Senhab0@";
+constexpr char* MQTT_BROKER   = "10.150.207.154";
+constexpr int   MQTT_PORT     = 1883;
 
 WiFiClient espClient;
 PubSubClient client(espClient);
