@@ -81,15 +81,17 @@ Substitua `<ID>` pelo número do seu grupo (de `2` a `7`). A Central assina o pa
 
 ---
 
-### 3.5. Pistas entre Módulos (`jogo/modulo/<ID_DESTINO>/dica`)
+### 3.5. Pistas e Dependências Diretas (Módulo → Módulo)
 
-Comunicação direta para satisfazer o requisito de dependência entre módulos sem intermediários.
+Troca de dados direta entre minijogos que possuem dependência mútua.
 
-* **Exemplo:** O Grupo 3 (Sequência de luzes) foi resolvido e gera o código de liberação para o Grupo 2 (Teclado).
-* O Grupo 3 publica `"8310"` no tópico `jogo/modulo/2/dica`.
-* O Grupo 2 escuta esse tópico e atualiza o estado interno da trava.
+* **Tópico:** `jogo/modulo/<ID_DESTINO>/dica`
+* **Formato do Payload:** O cabeçalho com o ID de origem deve estar na primeira linha, separado do conteúdo por uma quebra de linha (`\n`):
 
-
+```text
+<ID_ORIGEM>
+<CONTEUDO>
+```
 
 ---
 

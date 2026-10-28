@@ -1,9 +1,16 @@
 #include <WiFi.h>
 #include <PubSubClient.h>
+#include <TFT_eSPI.h>
+#include <SPI.h>
 
-constexpr char* WIFI_SSID {"iot2026"};
-constexpr char* WIFI_PASS {"Senhab0@"};
-constexpr char* MQTT_BROKER {"10.150.207.154"};
+constexpr char* WIFI_SSID {"POCOF5_7877"};
+constexpr char* WIFI_PASS {"12345678"};
+constexpr char* MQTT_BROKER {"10.186.162.138"};
+
+// constexpr char* WIFI_SSID {"iot2026"};
+// constexpr char* WIFI_PASS {"Senhab0@"};
+// constexpr char* MQTT_BROKER {"10.150.207.154"};
+
 constexpr int MQTT_PORT {1883};
 
 constexpr int TEMPO_TOTAL {300}; // 5 minutos
@@ -12,19 +19,99 @@ constexpr int NUM_MODULOS {6}; // 6 modulos
 
 #define BTN_START 35
 #define BTN_RESET 0
+#define TFT_BL_PIN 4
 
-enum GameState {LOBBY, RUNNING, VICTORY, DEFEAT};
-GameState state{LOBBY};
+enum GameState {NONE, LOBBY, RUNNING, VICTORY, DEFEAT};
+GameState state{NONE};
 
 int tempoFaltante{TEMPO_TOTAL};
 int erros{};
 int acertos{};
+bool solvedModules[NUM_MODULOS + 2]{};
 char bombSerial[6] = "-----";
 
 unsigned long lastTick{};
 
 WiFiClient espClient;
 PubSubClient mqttClient(espClient);
+TFT_eSPI tft = TFT_eSPI();
+
+void
+drawLobby(void)
+{
+  tft.fillScreen(TFT_BLACK);
+
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.drawCentreString("Bomba", 120, 10, 4);
+
+  tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+  tft.drawCentreString("AGUARDANDO INICIO", 120, 45, 2);
+
+  tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
+  tft.drawCentreString("SN: -----", 120, 70, 2);
+}
+
+void
+drawRunning(void)
+{
+  tft.fillScreen(TFT_BLACK);
+
+  tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+  tft.setCursor(10, 6, 2);
+  tft.printf("SN: %s", bombSerial);
+
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.drawString("ERROS:", 10, 108, 2);
+}
+
+void
+updateRunningData(void)
+{
+  int min{tempoFaltante / 60};
+  int seg{tempoFaltante % 60};
+
+  char bufTempo[10];
+  snprintf(bufTempo, sizeof(bufTempo), "%02d:%02d", min, seg);
+
+  tft.setTextColor(tempoFaltante <= 60 ? TFT_RED : TFT_WHITE, TFT_BLACK);
+  tft.drawCentreString(bufTempo, 120, 30, 7);
+
+  tft.setCursor(65, 108, 2);
+  for (int i = 0; i < MAX_ERROS; i++) {
+    if (i < erros) {
+      tft.setTextColor(TFT_RED, TFT_BLACK);
+      tft.print("X ");
+    } else {
+      tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
+      tft.print("_ ");
+    }
+  }
+
+  char bufProg[10];
+  snprintf(bufProg, sizeof(bufProg), "%d/%d", acertos, NUM_MODULOS);
+  tft.setTextColor(TFT_CYAN, TFT_BLACK);
+  tft.drawRightString(bufProg, 230, 108, 2);
+}
+
+void
+drawFinish(bool vitoria)
+{
+  if (vitoria) {
+    tft.fillScreen(TFT_DARKGREEN);
+    tft.setTextColor(TFT_WHITE, TFT_DARKGREEN);
+    tft.drawCentreString("DESARMADA!", 120, 20, 4);
+    tft.drawCentreString("VITORIA GERAL", 120, 60, 4);
+    tft.setTextColor(TFT_LIGHTGREY, TFT_DARKGREEN);
+    tft.drawCentreString("Pressione GPIO 0 p/ Reset", 120, 105, 2);
+  } else {
+    tft.fillScreen(TFT_RED);
+    tft.setTextColor(TFT_WHITE, TFT_RED);
+    tft.drawCentreString("BOOM!", 120, 15, 6);
+    tft.drawCentreString("BOMBA DETONADA", 120, 70, 4);
+    tft.setTextColor(TFT_BLACK, TFT_RED);
+    tft.drawCentreString("Pressione GPIO 0 p/ Reset", 120, 110, 2);
+  }
+}
 
 void
 generateSerial(void)
@@ -40,20 +127,25 @@ generateSerial(void)
 void
 changeState(GameState newState)
 {
+  if (newState == state) return;
+
   state = newState;
 
   if (state == LOBBY) {
     tempoFaltante = TEMPO_TOTAL;
     erros = 0;
     acertos = 0;
+    memset(solvedModules, 0, sizeof(solvedModules));
     strcpy(bombSerial, "-----");
 
     mqttClient.publish("jogo/serial", bombSerial, true);
     mqttClient.publish("jogo/estado", "RESET", true);
+    drawLobby();
   } else if (state == RUNNING) {
     tempoFaltante = TEMPO_TOTAL;
     erros = 0;
     acertos = 0;
+    memset(solvedModules, 0, sizeof(solvedModules));
     lastTick = millis();
 
     generateSerial();
@@ -63,10 +155,15 @@ changeState(GameState newState)
     char buf[8];
     itoa(tempoFaltante, buf, 10);
     mqttClient.publish("jogo/tempo", buf, false);
+
+    drawRunning();
+    updateRunningData();
   } else if (state == VICTORY) {
     mqttClient.publish("jogo/estado", "VICTORY", true);
+    drawFinish(1);
   } else if (state == DEFEAT) {
     mqttClient.publish("jogo/estado", "DEFEAT", true);
+    drawFinish(0);
   }
 }
 
@@ -79,14 +176,26 @@ callbackMqtt(char* topic, byte* payload, unsigned int length)
 
   if (state != RUNNING) return;
 
+  int modId = 0;
+  if (sscanf(topic, "jogo/modulo/%d/evento", &modId) != 1) return;
+
+  if (modId < 2 || modId > 7) return;
+
+  if (solvedModules[modId]) {
+    return;
+  }
+
   if (strcmp(msg, "SOLVED") == 0) {
     acertos++;
+    updateRunningData();
+    solvedModules[modId] = 1;
 
     if (acertos >= NUM_MODULOS) {
       changeState(VICTORY);
     }
   } else if (strcmp(msg, "ERROR") == 0) {
     erros++;
+    updateRunningData();
 
     if (erros >= MAX_ERROS) {
       changeState(DEFEAT);
@@ -109,7 +218,7 @@ void
 connectMQTT(void)
 {
   while (!mqttClient.connected()) {
-    if (mqttClient.connect("Bomba")) {
+    if (mqttClient.connect("bomba")) {
       mqttClient.subscribe("jogo/modulo/+/evento");
     } else {
       delay(1000);
@@ -124,6 +233,13 @@ setup(void)
   Serial.begin(9600);
   pinMode(BTN_START, INPUT);
   pinMode(BTN_RESET, INPUT_PULLUP);
+
+  pinMode(TFT_BL_PIN, OUTPUT);
+  digitalWrite(TFT_BL_PIN, HIGH);
+
+  tft.init();
+  tft.setRotation(1);
+  tft.fillScreen(TFT_WHITE);
 
   randomSeed(esp_random());
 
@@ -165,10 +281,11 @@ loop(void)
       itoa(tempoFaltante, bufTempo, 10);
       mqttClient.publish("jogo/tempo", bufTempo, false);
 
+      updateRunningData();
+
       if (tempoFaltante <= 0) {
         changeState(DEFEAT);
       }
     }
   }
 }
-
