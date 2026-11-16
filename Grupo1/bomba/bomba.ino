@@ -3,13 +3,13 @@
 #include <TFT_eSPI.h>
 #include <SPI.h>
 
-constexpr const char* WIFI_SSID {"POCOF5_7877"};
-constexpr const char* WIFI_PASS {"12345678"};
-constexpr const char* MQTT_BROKER {"10.86.232.138"};
+//constexpr const char* WIFI_SSID {"POCOF5_7877"};
+//constexpr const char* WIFI_PASS {"12345678"};
+//constexpr const char* MQTT_BROKER {"10.86.232.138"};
 
-//constexpr const char* WIFI_SSID {"iot2022"};
-//constexpr const char* WIFI_PASS {"S3nhab0@"};
-//constexpr const char* MQTT_BROKER {"192.168.2.100"};
+constexpr const char* WIFI_SSID {"iot2022"};
+constexpr const char* WIFI_PASS {"S3nhab0@"};
+constexpr const char* MQTT_BROKER {"192.168.2.100"};
 
 constexpr int MQTT_PORT {1883};
 
