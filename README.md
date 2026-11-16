@@ -1,19 +1,20 @@
 # RFC 001: Protocolo de Comunicação MQTT — Jogo IoT Cooperativo
 
-* **Status:** Proposta de Padronização Oficial
+* **Status:** Especificação Oficial (Atualizada)
 * **Autor:** Grupo 1 (Central de Controle)
-* **Público-alvo:** Grupos 2 a 7
+* **Público-alvo:** Grupos 2 a 11 (até 10 módulos simultâneos)
 * **Formato de Dados:** Texto simples (ASCII / Plain Text), sem JSON
 
 ---
 
 ## 1. Filosofia de Arquitetura
 
-O sistema opera de forma **desacoplada e orientada a eventos**:
+O sistema opera de forma **desacoplada, dinâmica e orientada a eventos**:
 
 * **A Central é um orquestrador cego:** A Central de Controle **não** valida códigos, senhas, medições de sensores ou regras internas de nenhum minijogo. Cada grupo tem total autonomia para gerenciar e validar seus desafios internamente.
-* **Sem dependência de bibliotecas pesadas:** Todas as mensagens trafegam como strings literais puras, dispensando o uso de parsers JSON (`ArduinoJson`) nos microcontroladores.
-* **Tolerância a falhas de rede:** Mensagens cruciais usam flag *Retain*, garantindo que um módulo que reinicie durante a partida receba imediatamente o estado atual e o identificador do jogo.
+* **Descoberta Dinâmica e Fila Sequencial:** Os módulos anunciam sua presença ao conectar. A Central monta a fila apenas com os grupos realmente online (mesmo que haja saltos na numeração, ex: Grupos 2, 4 e 9) e libera um módulo por vez em ordem crescente.
+* **Roteamento Aleatório de Dicas:** Quando um módulo precisa enviar uma pista (como um labirinto ou código), ele publica para a Central, que sorteia outro módulo online (incluindo os que já foram resolvidos) e entrega a mensagem identificando o remetente no próprio tópico.
+* **Tolerância a falhas de rede:** Mensagens de estado e presença usam flag *Retain* e *Last Will and Testament (LWT)*, garantindo que quedas de energia ou reconexões sejam tratadas automaticamente.
 
 ---
 
@@ -21,77 +22,97 @@ O sistema opera de forma **desacoplada e orientada a eventos**:
 
 | Tópico | Direção | Retain | Frequência | Descrição / Payloads |
 | --- | --- | --- | --- | --- |
+| `jogo/modulo/<ID>/status` | Módulo $\to$ Central | **Sim** | Ao conectar / LWT | `ONLINE` ou `OFFLINE` (registra o módulo na fila) |
 | `jogo/estado` | Central $\to$ Todos | **Sim** | Sob transição | `START`, `RESET`, `VICTORY`, `DEFEAT` |
 | `jogo/serial` | Central $\to$ Todos | **Sim** | No `START` e `RESET` | Identificador único da bomba (ex: `A7-31` ou `-----`) |
+| `jogo/modulo/ativo` | Central $\to$ Todos | **Sim** | Sob turno / transição | ID do grupo da vez (ex: `2`, `4`, `9`) ou `0` (travado) |
 | `jogo/tempo` | Central $\to$ Todos | Não | 1 Hz (1x por seg) | Inteiro puro com segundos restantes (ex: `299`). **Opcional.** |
 | `jogo/modulo/<ID>/evento` | Módulo $\to$ Central | Não | Sob evento | `SOLVED` (sucesso) ou `ERROR` (falha/strike) |
-| `jogo/modulo/<ID>/dica` | Módulo $\to$ Módulo | Não | Conforme lógica | Troca direta de dados entre desafios sem passar pela Central |
+| `jogo/modulo/<ID>/dica` | Módulo $\to$ Central | Não | Conforme lógica | Payload puro da dica a ser roteada para um grupo aleatório |
+| `jogo/modulo/<DEST>/dica/<ORIG>` | Central $\to$ Módulo | Não | Sob roteamento | Entrega da dica ao `<DEST>` informando quem enviou (`<ORIG>`) |
 
 ---
 
 ## 3. Detalhamento dos Tópicos
 
-### 3.1. Estado Global (`jogo/estado`)
+### 3.1. Registro de Presença (`jogo/modulo/<ID>/status`)
+
+Obrigatório para que a Central inclua o módulo na partida e no sorteio de dicas. Deve ser configurado com **Last Will and Testament (LWT)** no momento da conexão ao broker.
+
+* **`ONLINE`:** Publicado (com `retain = true`) imediatamente após conectar ao broker.
+* **`OFFLINE`:** Configurado como mensagem de LWT (`retain = true`). Se o ESP32 perder energia ou conexão, o broker avisa a Central automaticamente.
+
+---
+
+### 3.2. Estado Global (`jogo/estado`)
 
 Todos os módulos devem assinar este tópico para controlar sua máquina de estados local.
 
-* **`START`:** Habilita sensores/atuadores, reseta variáveis internas e inicia o desafio.
+* **`START`:** Inicia a partida e reseta variáveis internas do desafio.
 * **`RESET`:** Cancela a partida e coloca o módulo em espera (tela inicial).
 * **`VICTORY`:** Desarma o módulo (vitória dos jogadores). Trava interações e exibe mensagem de sucesso.
 * **`DEFEAT`:** Trava o módulo em falha (explosão por tempo esgotado ou excesso de erros).
 
 ---
 
-### 3.2. Serial da Partida (`jogo/serial`)
+### 3.3. Controle de Turno Sequencial (`jogo/modulo/ativo`)
 
-Identificador alfanumérico estático sorteado pela Central no início de cada partida. Atende ao requisito de exibir dados distribuídos no display e serve como base para regras dos manuais.
+Os módulos são resolvidos sequencialmente. A Central publica o ID do grupo que está liberado para jogar no momento.
+
+* **Payloads:** O número do grupo ativo (ex: `"2"`, `"4"`, `"9"`) ou `"0"` quando o jogo estiver no Lobby ou finalizado.
+* **Comportamento esperado do Módulo:**
+  * Se `ativo == MEU_ID`: Libera os sensores/botões para o jogador interagir.
+  * Se `ativo != MEU_ID`: Mantém a interação do desafio bloqueada (aguardando a vez ou já concluído).
+  * *Nota:* A Central ignora eventos `SOLVED` ou `ERROR` enviados por módulos que não sejam o ativo atual.
+
+---
+
+### 3.4. Serial da Partida (`jogo/serial`)
+
+Identificador alfanumérico estático sorteado pela Central no início de cada partida.
 
 * **Formato:** 5 caracteres ASCII: `LL-DD` (duas letras maiúsculas, hífen, dois dígitos numéricos).
 * **Exemplos:** `B4-92`, `K7-03`, `XP-88`. No reset: `-----`.
 * **Como os grupos utilizam:**
-1. **Visualização:** Reservar uma área no display TFT para estampar o serial (ex: cabeçalho ou rodapé: `SN: B4-92`).
-2. **Regras de Desafio (Manuais em papel):**
-* *Grupo 2 (Teclado):* *"Se o último dígito do serial for ímpar, adicione 2 ao primeiro dígito da senha."*
-* *Grupo 4 (Distância):* *"Se o serial contiver a letra 'B', o alvo é 15 cm; caso contrário, 30 cm."*
-
-
-
-
+  1. **Visualização:** Reservar uma área no display TFT para estampar o serial (ex: `SN: B4-92`).
+  2. **Regras de Desafio (Manuais em papel):**
+     * *Grupo 2 (Teclado):* *"Se o último dígito do serial for ímpar, adicione 2 ao primeiro dígito da senha."*
+     * *Grupo 4 (Distância):* *"Se o serial contiver a letra 'B', o alvo é 15 cm; caso contrário, 30 cm."*
 
 ---
 
-### 3.3. Sincronização de Tempo (`jogo/tempo`) — *Opcional*
+### 3.5. Sincronização de Tempo (`jogo/tempo`) — *Opcional*
 
 Publicado pela Central a cada 1 segundo enquanto a partida estiver ativa (`RUNNING`).
 
 * **Payload:** String ASCII com o número de segundos (ex: `"300"`, `"299"`, `"59"`).
-* **Uso sugerido:** Atualizar um relógio local ou acelerar o piscar de LEDs/bipes de aviso nos últimos 30 segundos.
-* *Nota:* Módulos que não precisam saber o tempo exato podem simplesmente ignorar este tópico.
+* **Uso sugerido:** Atualizar um relógio local ou acelerar bipes de aviso nos últimos 30 segundos.
 
 ---
 
-### 3.4. Notificação de Eventos (`jogo/modulo/<ID>/evento`)
+### 3.6. Notificação de Eventos (`jogo/modulo/<ID>/evento`)
 
-Substitua `<ID>` pelo número do seu grupo (de `2` a `7`). A Central assina o padrão curinga `jogo/modulo/+/evento`.
+Substitua `<ID>` pelo número do seu grupo (de `2` a `11`).
 
-* **`SOLVED`:** Notifica que o desafio do módulo foi vencido. A Central incrementa o contador global de módulos resolvidos (meta: 6).
-* **`ERROR`:** Notifica que o jogador cometeu um erro grave na interação. A Central adiciona 1 *strike* (limite: 3 strikes antes da derrota).
+* **`SOLVED`:** Notifica que o desafio do módulo foi vencido. A Central avança para o próximo módulo online da fila (ou declara `VICTORY` se for o último).
+* **`ERROR`:** Notifica que o jogador cometeu um erro grave. A Central adiciona 1 *strike* (limite: 3 strikes antes de `DEFEAT`).
 
-> **Atenção:** Publique apenas quando houver resolução definitiva ou erro confirmado. Não envie dados contínuos de sensores neste tópico.
+> **Atenção:** Publique apenas quando houver resolução definitiva ou erro confirmado, e somente quando for a vez do seu módulo.
 
 ---
 
-### 3.5. Pistas e Dependências Diretas (Módulo → Módulo)
+### 3.7. Roteamento Aleatório de Dicas (`dica`)
 
-Troca de dados direta entre minijogos que possuem dependência mútua.
+Para cumprir o requisito de dependência cruzada sem acoplar os grupos, a Central atua como roteador aleatório:
 
-* **Tópico:** `jogo/modulo/<ID_DESTINO>/dica`
-* **Formato do Payload:** O cabeçalho com o ID de origem deve estar na primeira linha, separado do conteúdo por uma quebra de linha (`\n`):
+1. **Envio (Módulo $\to$ Central):** O módulo publica o conteúdo puro (sem cabeçalhos) no seu próprio tópico:
+   * **Tópico:** `jogo/modulo/<MEU_ID>/dica`
+   * **Payload:** Conteúdo livre (ex: `"3;0,0;5,5"` para coordenadas de labirinto, ou `"8310"`).
+2. **Entrega (Central $\to$ Módulo Aleatório):** A Central sorteia qualquer outro módulo `ONLINE` (incluindo módulos que já enviaram `SOLVED`) e republica:
+   * **Tópico:** `jogo/modulo/<ID_SORTEADO>/dica/<MEU_ID>`
+   * **Payload:** O conteúdo intacto enviado na etapa 1.
 
-```text
-<ID_ORIGEM>
-<CONTEUDO>
-```
+> **Importante para os displays:** Mesmo após o seu módulo enviar `SOLVED`, **mantenha o callback de dicas ativo** e continue exibindo dicas recebidas na tela durante toda a partida (`RUNNING`), pois outros grupos podem precisar consultar a pista no seu display.
 
 ---
 
@@ -103,84 +124,130 @@ Snippet pronto para ESP32 compatível com a biblioteca `PubSubClient`:
 #include <WiFi.h>
 #include <PubSubClient.h>
 
-// Defina o número do seu grupo aqui (de "2" a "7")
+// Defina o número do seu grupo aqui (ex: "2" a "11")
 #define MODULO_ID "2"
+#define MODULO_NUM 2
 
-constexpr char* WIFI_SSID     = "iot2022";
-constexpr char* WIFI_PASSWORD = "S3nhab0@";
-constexpr char* MQTT_BROKER   = "192.168.2.100";
-constexpr int   MQTT_PORT     = 1883;
+constexpr const char* WIFI_SSID     = "iot2026";
+constexpr const char* WIFI_PASSWORD = "Senhab0@";
+constexpr const char* MQTT_BROKER   = "10.150.207.154";
+constexpr int         MQTT_PORT     = 1883;
 
 WiFiClient espClient;
 PubSubClient client(espClient);
 
 // Variáveis de estado global sincronizadas pela rede
 char serialBomba[8] = "-----";
-int tempoRestante   = 0;
-bool desafioAtivo   = false;
+int  tempoRestante  = 0;
+bool jogoRodando    = false;
+bool minhaVez       = false;
+bool jaResolvido    = false;
 
 void callbackMqtt(char* topic, byte* payload, unsigned int length) {
   char msg[length + 1];
   memcpy(msg, payload, length);
   msg[length] = '\0';
 
+  // Higieniza eventuais quebras de linha residuais
+  while (length > 0 && (msg[length - 1] == '\r' || msg[length - 1] == '\n' || msg[length - 1] == ' ')) {
+    msg[--length] = '\0';
+  }
+
   // 1. Estados globais da partida
   if (strcmp(topic, "jogo/estado") == 0) {
     if (strcmp(msg, "START") == 0) {
-      desafioAtivo = true;
-      // Iniciar leituras de sensores / habilitar botoes
+      jogoRodando = true;
+      jaResolvido = false;
+      // Resetar variaveis do desafio para nova partida
     } 
     else if (strcmp(msg, "RESET") == 0) {
-      desafioAtivo = false;
-      // Resetar variaveis locais e voltar para tela de espera
+      jogoRodando = false;
+      minhaVez    = false;
+      jaResolvido = false;
+      // Voltar para tela de espera
     } 
     else if (strcmp(msg, "VICTORY") == 0 || strcmp(msg, "DEFEAT") == 0) {
-      desafioAtivo = false;
+      jogoRodando = false;
+      minhaVez    = false;
       // Travar interacoes do jogador
     }
   }
 
-  // 2. Serial da partida (recebe no START)
-  else if (strcmp(topic, "jogo/serial") == 0) {
-    strncpy(serialBomba, msg, sizeof(serialBomba));
-    // DICA: Atualizar display do modulo com o serial:
-    // tft.drawString(serialBomba, 10, 10, 2);
+  // 2. Controle sequencial (verifica se é o turno deste módulo)
+  else if (strcmp(topic, "jogo/modulo/ativo") == 0) {
+    int idAtivo = atoi(msg);
+    minhaVez = (idAtivo == MODULO_NUM);
+    
+    if (minhaVez) {
+      // Habilitar sensores/botoes do desafio!
+    } else {
+      // Bloquear interacao do desafio (aguardando vez ou ja concluido)
+    }
   }
 
-  // 3. Sincronização opcional de tempo
+  // 3. Serial da partida (recebe no START)
+  else if (strcmp(topic, "jogo/serial") == 0) {
+    strncpy(serialBomba, msg, sizeof(serialBomba));
+    // Atualizar display do modulo com o serial
+  }
+
+  // 4. Sincronização opcional de tempo
   else if (strcmp(topic, "jogo/tempo") == 0) {
     tempoRestante = atoi(msg);
   }
 
-  // 4. Pistas recebidas de outro módulo
-  else if (strcmp(topic, "jogo/modulo/" MODULO_ID "/dica") == 0) {
-    // Processar dado recebido (ex: msg contem "8310")
+  // 5. Pistas roteadas pela Central vindas de outro módulo
+  else {
+    int idOrigem = 0;
+    if (sscanf(topic, "jogo/modulo/" MODULO_ID "/dica/%d", &idOrigem) == 1) {
+      // 'idOrigem' informa qual grupo enviou a dica
+      // 'msg' contem o payload puro (ex: labirinto ou codigo)
+      // IMPORTANTE: Exibir no display mesmo se 'jaResolvido == true'!
+    }
   }
 }
 
 void reconectarMQTT() {
   while (!client.connected()) {
-    if (client.connect("Modulo_" MODULO_ID)) {
+    // Conecta configurando Last Will (LWT) para avisar OFFLINE se cair
+    if (client.connect("Modulo_" MODULO_ID,
+                       "jogo/modulo/" MODULO_ID "/status",
+                       0,
+                       true,
+                       "OFFLINE")) {
+      
+      // Anuncia que o modulo esta ONLINE (com retain)
+      client.publish("jogo/modulo/" MODULO_ID "/status", "ONLINE", true);
+
       // Inscricoes obrigatorias
       client.subscribe("jogo/estado");
       client.subscribe("jogo/serial");
+      client.subscribe("jogo/modulo/ativo");
+      client.subscribe("jogo/modulo/" MODULO_ID "/dica/+");
 
-      // Inscricoes opcionais (comente se nao for usar)
+      // Inscricao opcional de tempo
       client.subscribe("jogo/tempo");
-      client.subscribe("jogo/modulo/" MODULO_ID "/dica");
     } else {
       delay(1000);
     }
   }
 }
 
-// Funcoes de notificacao para a Central
+// Funcoes auxiliares para publicar eventos e dicas
 void registrarSucesso() {
+  if (!jogoRodando || !minhaVez || jaResolvido) return;
+  jaResolvido = true;
   client.publish("jogo/modulo/" MODULO_ID "/evento", "SOLVED");
 }
 
 void registrarErro() {
+  if (!jogoRodando || !minhaVez || jaResolvido) return;
   client.publish("jogo/modulo/" MODULO_ID "/evento", "ERROR");
+}
+
+void enviarDicaAleatoria(const char* conteudo) {
+  if (!jogoRodando) return;
+  client.publish("jogo/modulo/" MODULO_ID "/dica", conteudo);
 }
 
 void setup() {
@@ -195,9 +262,10 @@ void loop() {
   if (!client.connected()) reconectarMQTT();
   client.loop();
 
-  // Exemplo de uso no seu loop:
-  // if (desafioAtivo && jogadorAcertou())  registrarSucesso();
-  // if (desafioAtivo && jogadorErrou())    registrarErro();
+  // Exemplo de uso no loop:
+  // if (jogoRodando && minhaVez) {
+  //   if (jogadorAcertou()) registrarSucesso();
+  //   if (jogadorErrou())   registrarErro();
+  // }
 }
-
 ```

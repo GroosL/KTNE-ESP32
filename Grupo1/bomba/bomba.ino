@@ -3,19 +3,19 @@
 #include <TFT_eSPI.h>
 #include <SPI.h>
 
-constexpr char* WIFI_SSID {"POCOF5_7877"};
-constexpr char* WIFI_PASS {"12345678"};
-constexpr char* MQTT_BROKER {"10.186.162.138"};
+constexpr const char* WIFI_SSID {"POCOF5_7877"};
+constexpr const char* WIFI_PASS {"12345678"};
+constexpr const char* MQTT_BROKER {"10.86.232.138"};
 
-// constexpr char* WIFI_SSID {"iot2026"};
-// constexpr char* WIFI_PASS {"Senhab0@"};
-// constexpr char* MQTT_BROKER {"10.150.207.154"};
+//constexpr const char* WIFI_SSID {"iot2022"};
+//constexpr const char* WIFI_PASS {"S3nhab0@"};
+//constexpr const char* MQTT_BROKER {"192.168.2.100"};
 
 constexpr int MQTT_PORT {1883};
 
 constexpr int TEMPO_TOTAL {300}; // 5 minutos
 constexpr int MAX_ERROS {3};
-constexpr int NUM_MODULOS {6}; // 6 modulos
+constexpr int MAX_MODULOS {10};   // Módulos de 2 a 7
 
 #define BTN_START 35
 #define BTN_RESET 0
@@ -27,14 +27,62 @@ GameState state{NONE};
 int tempoFaltante{TEMPO_TOTAL};
 int erros{};
 int acertos{};
-bool solvedModules[NUM_MODULOS + 2]{};
 char bombSerial[6] = "-----";
+
+int modulosDisponiveis[MAX_MODULOS]{};
+int qtdModulos{0};
+int indiceAtivo{0};
 
 unsigned long lastTick{};
 
 WiFiClient espClient;
 PubSubClient mqttClient(espClient);
 TFT_eSPI tft = TFT_eSPI();
+
+void changeState(GameState newState);
+void updateRunningData(void);
+
+int
+getModuloAtual(void)
+{
+  if (indiceAtivo >= 0 && indiceAtivo < qtdModulos) {
+    return modulosDisponiveis[indiceAtivo];
+  }
+  return 0;
+}
+
+void
+publicarModuloAtivo(int id)
+{
+  char buf[4];
+  itoa(id, buf, 10);
+  mqttClient.publish("jogo/modulo/ativo", buf, true);
+}
+
+void
+updateLobbyModules(void)
+{
+  if (state != LOBBY) return;
+
+  // Limpa a faixa inferior antes de redesenhar a lista
+  tft.fillRect(0, 95, 240, 35, TFT_BLACK);
+
+  if (qtdModulos == 0) {
+    tft.setTextColor(TFT_RED, TFT_BLACK);
+    tft.drawCentreString("NENHUM MODULO ONLINE", 120, 102, 2);
+    return;
+  }
+
+  char lista[48] = "ONLINE:";
+  for (int i = 0; i < qtdModulos; i++) {
+    char item[8];
+    snprintf(item, sizeof(item), " G%d", modulosDisponiveis[i]);
+    strncat(lista, item, sizeof(lista) - strlen(lista) - 1);
+  }
+
+  tft.setTextColor(TFT_GREEN, TFT_BLACK);
+  tft.drawCentreString(lista, 120, 102, 2);
+}
 
 void
 drawLobby(void)
@@ -49,6 +97,8 @@ drawLobby(void)
 
   tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
   tft.drawCentreString("SN: -----", 120, 70, 2);
+
+  updateLobbyModules();
 }
 
 void
@@ -67,6 +117,16 @@ drawRunning(void)
 void
 updateRunningData(void)
 {
+  char bufAtivo[16];
+  int atual = getModuloAtual();
+  if (atual > 0) {
+    snprintf(bufAtivo, sizeof(bufAtivo), "ATUAL: G%d", atual);
+  } else {
+    snprintf(bufAtivo, sizeof(bufAtivo), "ATUAL: --");
+  }
+  tft.setTextColor(TFT_ORANGE, TFT_BLACK);
+  tft.drawRightString(bufAtivo, 230, 6, 2);
+
   int min{tempoFaltante / 60};
   int seg{tempoFaltante % 60};
 
@@ -76,6 +136,7 @@ updateRunningData(void)
   tft.setTextColor(tempoFaltante <= 60 ? TFT_RED : TFT_WHITE, TFT_BLACK);
   tft.drawCentreString(bufTempo, 120, 30, 7);
 
+  // Strikes
   tft.setCursor(65, 108, 2);
   for (int i = 0; i < MAX_ERROS; i++) {
     if (i < erros) {
@@ -88,7 +149,7 @@ updateRunningData(void)
   }
 
   char bufProg[10];
-  snprintf(bufProg, sizeof(bufProg), "%d/%d", acertos, NUM_MODULOS);
+  snprintf(bufProg, sizeof(bufProg), "%d/%d", acertos, qtdModulos);
   tft.setTextColor(TFT_CYAN, TFT_BLACK);
   tft.drawRightString(bufProg, 230, 108, 2);
 }
@@ -125,6 +186,94 @@ generateSerial(void)
 }
 
 void
+adicionarModulo(int id)
+{
+  if (id < 2 || id > MAX_MODULOS + 1) return;
+
+  for (int i = 0; i < qtdModulos; i++) {
+    if (modulosDisponiveis[i] == id) return;
+  }
+
+  if (qtdModulos >= MAX_MODULOS) return;
+
+  int pos = qtdModulos;
+  while (pos > 0 && modulosDisponiveis[pos - 1] > id) {
+    modulosDisponiveis[pos] = modulosDisponiveis[pos - 1];
+    pos--;
+  }
+  modulosDisponiveis[pos] = id;
+  qtdModulos++;
+
+  Serial.printf("Modulo G%d conectado (Total: %d)\n", id, qtdModulos);
+
+  if (state == LOBBY) {
+    updateLobbyModules();
+  } else if (state == RUNNING) {
+    if (pos <= indiceAtivo) {
+      indiceAtivo++;
+    }
+    updateRunningData();
+  }
+}
+
+void
+removerModulo(int id)
+{
+  for (int i = 0; i < qtdModulos; i++) {
+    if (modulosDisponiveis[i] == id) {
+      for (int j = i; j < qtdModulos - 1; j++) {
+        modulosDisponiveis[j] = modulosDisponiveis[j + 1];
+      }
+      qtdModulos--;
+
+      Serial.printf("Modulo G%d desconectado (Total: %d)\n", id, qtdModulos);
+
+      if (state == LOBBY) {
+        updateLobbyModules();
+      } else if (state == RUNNING) {
+        if (i < indiceAtivo) {
+          indiceAtivo--;
+        } else if (i == indiceAtivo) {
+          if (indiceAtivo >= qtdModulos && acertos > 0) {
+            changeState(VICTORY);
+            return;
+          }
+          publicarModuloAtivo(getModuloAtual());
+        }
+        updateRunningData();
+      }
+      return;
+    }
+  }
+}
+
+void
+encaminharDicaAleatoria(int origem, const char* conteudo)
+{
+  int candidatos[MAX_MODULOS]{};
+  int qtdCandidatos{0};
+
+  for (int i = 0; i < qtdModulos; i++) {
+    if (modulosDisponiveis[i] != origem) {
+      candidatos[qtdCandidatos++] = modulosDisponiveis[i];
+    }
+  }
+
+  if (qtdCandidatos == 0) {
+    Serial.printf("Dica de G%d descartada: nenhum outro modulo online.\n", origem);
+    return;
+  }
+
+  int destino = candidatos[random(0, qtdCandidatos)];
+
+  char topicoDestino[36];
+  snprintf(topicoDestino, sizeof(topicoDestino), "jogo/modulo/%d/dica/%d", destino, origem);
+
+  mqttClient.publish(topicoDestino, conteudo, false);
+  Serial.printf("Dica roteada: G%d -> G%d [%s]\n", origem, destino, conteudo);
+}
+
+void
 changeState(GameState newState)
 {
   if (newState == state) return;
@@ -135,9 +284,10 @@ changeState(GameState newState)
     tempoFaltante = TEMPO_TOTAL;
     erros = 0;
     acertos = 0;
-    memset(solvedModules, 0, sizeof(solvedModules));
+    indiceAtivo = 0;
     strcpy(bombSerial, "-----");
 
+    publicarModuloAtivo(0);
     mqttClient.publish("jogo/serial", bombSerial, true);
     mqttClient.publish("jogo/estado", "RESET", true);
     drawLobby();
@@ -145,12 +295,13 @@ changeState(GameState newState)
     tempoFaltante = TEMPO_TOTAL;
     erros = 0;
     acertos = 0;
-    memset(solvedModules, 0, sizeof(solvedModules));
+    indiceAtivo = 0;
     lastTick = millis();
 
     generateSerial();
     mqttClient.publish("jogo/serial", bombSerial, true);
     mqttClient.publish("jogo/estado", "START", true);
+    publicarModuloAtivo(getModuloAtual());
 
     char buf[8];
     itoa(tempoFaltante, buf, 10);
@@ -159,46 +310,66 @@ changeState(GameState newState)
     drawRunning();
     updateRunningData();
   } else if (state == VICTORY) {
+    publicarModuloAtivo(0);
     mqttClient.publish("jogo/estado", "VICTORY", true);
-    drawFinish(1);
+    drawFinish(true);
   } else if (state == DEFEAT) {
+    publicarModuloAtivo(0);
     mqttClient.publish("jogo/estado", "DEFEAT", true);
-    drawFinish(0);
+    drawFinish(false);
   }
 }
 
 void
 callbackMqtt(char* topic, byte* payload, unsigned int length)
 {
-  char msg[length+1];
+  char msg[length + 1];
   memcpy(msg, payload, length);
   msg[length] = '\0';
 
-  if (state != RUNNING) return;
+  while (length > 0 && (msg[length - 1] == '\r' || msg[length - 1] == '\n' || msg[length - 1] == ' ')) {
+    msg[--length] = '\0';
+  }
 
-  int modId = 0;
-  if (sscanf(topic, "jogo/modulo/%d/evento", &modId) != 1) return;
+  int modId{0};
+  int pos{0};
 
-  if (modId < 2 || modId > 7) return;
-
-  if (solvedModules[modId]) {
+  if (sscanf(topic, "jogo/modulo/%d/status%n", &modId, &pos) == 1 && topic[pos] == '\0') {
+    if (strcmp(msg, "ONLINE") == 0) {
+      adicionarModulo(modId);
+    } else if (strcmp(msg, "OFFLINE") == 0) {
+      removerModulo(modId);
+    }
     return;
   }
 
-  if (strcmp(msg, "SOLVED") == 0) {
-    acertos++;
-    updateRunningData();
-    solvedModules[modId] = 1;
+  if (state != RUNNING) return;
 
-    if (acertos >= NUM_MODULOS) {
-      changeState(VICTORY);
-    }
-  } else if (strcmp(msg, "ERROR") == 0) {
-    erros++;
-    updateRunningData();
+  if (sscanf(topic, "jogo/modulo/%d/dica%n", &modId, &pos) == 1 && topic[pos] == '\0') {
+    encaminharDicaAleatoria(modId, msg);
+    return;
+  }
 
-    if (erros >= MAX_ERROS) {
-      changeState(DEFEAT);
+  if (sscanf(topic, "jogo/modulo/%d/evento%n", &modId, &pos) == 1 && topic[pos] == '\0') {
+    if (modId != getModuloAtual()) return;
+
+    if (strcmp(msg, "SOLVED") == 0) {
+      acertos++;
+      indiceAtivo++;
+
+      if (indiceAtivo >= qtdModulos) {
+        changeState(VICTORY);
+      } else {
+        publicarModuloAtivo(getModuloAtual());
+        updateRunningData();
+      }
+    } else if (strcmp(msg, "ERROR") == 0) {
+      erros++;
+      updateRunningData();
+
+      if (erros >= MAX_ERROS) {
+        changeState(DEFEAT);
+      }
     }
   }
 }
@@ -219,6 +390,8 @@ connectMQTT(void)
 {
   while (!mqttClient.connected()) {
     if (mqttClient.connect("bomba")) {
+      mqttClient.subscribe("jogo/modulo/+/status");
+      mqttClient.subscribe("jogo/modulo/+/dica");
       mqttClient.subscribe("jogo/modulo/+/evento");
     } else {
       delay(1000);
@@ -230,7 +403,7 @@ connectMQTT(void)
 void
 setup(void)
 {
-  Serial.begin(9600);
+  Serial.begin(115200);
   pinMode(BTN_START, INPUT);
   pinMode(BTN_RESET, INPUT_PULLUP);
 
@@ -261,15 +434,17 @@ loop(void)
   mqttClient.loop();
 
   if (digitalRead(BTN_START) == LOW) {
-    if (state == LOBBY) {
+    if (state == LOBBY && qtdModulos > 0) {
       changeState(RUNNING);
       delay(300);
     }
   }
 
   if (digitalRead(BTN_RESET) == LOW) {
-    changeState(LOBBY);
-    delay(300);
+    if (state != LOBBY) {
+      changeState(LOBBY);
+      delay(300);
+    }
   }
 
   if (state == RUNNING) {
