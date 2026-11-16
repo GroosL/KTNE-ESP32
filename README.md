@@ -16,16 +16,16 @@ O sistema opera de forma **desacoplada, dinâmica e orientada a eventos**:
 
 ## 2. Especificação Geral de Tópicos
 
-| Tópico | Direção | Retain | Frequência | Descrição / Payloads |
-| --- | --- | --- | --- | --- |
-| `jogo/modulo/<ID>/status` | Módulo $\to$ Central | **Sim** | Ao conectar / LWT | `ONLINE` ou `OFFLINE` (registra o módulo na fila) |
-| `jogo/estado` | Central $\to$ Todos | **Sim** | Sob transição | `START`, `RESET`, `VICTORY`, `DEFEAT` |
-| `jogo/serial` | Central $\to$ Todos | **Sim** | No `START` e `RESET` | Identificador único da bomba (ex: `A7-31` ou `-----`) |
-| `jogo/modulo/ativo` | Central $\to$ Todos | **Sim** | Sob turno / transição | ID do grupo da vez (ex: `2`, `4`, `9`) ou `0` (travado) |
-| `jogo/tempo` | Central $\to$ Todos | Não | 1 Hz (1x por seg) | Inteiro puro com segundos restantes (ex: `299`). **Opcional.** |
-| `jogo/modulo/<ID>/evento` | Módulo $\to$ Central | Não | Sob evento | `SOLVED` (sucesso) ou `ERROR` (falha/strike) |
-| `jogo/modulo/<ORIG>/dica` | Módulo $\to$ Central | Não | Conforme lógica | Payload puro da dica para a Central rotear aleatoriamente |
-| `jogo/modulo/<DEST>/dica/<ORIG>` | Módulo/Central $\to$ Módulo | Não | Sob envio/roteamento | Entrega da dica ao `<DEST>` informando quem enviou (`<ORIG>`) |
+| Tópico | Direção | Retain | Frequência | Descrição / Payloads | 
+| ----- | ----- | ----- | ----- | ----- | 
+| `jogo/modulo/<ID>/status` | Módulo $\to$ Central | **Sim** | Ao conectar / LWT | `ONLINE` ou `OFFLINE` (registra o módulo na fila) | 
+| `jogo/estado` | Central $\to$ Todos | **Sim** | Sob transição | `START`, `RESET`, `VICTORY`, `DEFEAT` | 
+| `jogo/serial` | Central $\to$ Todos | **Sim** | No `START` e `RESET` | Identificador único da bomba (ex: `A7-31` ou `-----`) | 
+| `jogo/modulo/ativo` | Central $\to$ Todos | **Sim** | Sob turno / transição | ID do grupo da vez (ex: `2`, `4`, `9`) ou `0` (travado) | 
+| `jogo/tempo` | Central $\to$ Todos | Não | 1 Hz (1x por seg) | Inteiro puro com segundos restantes (ex: `299`). **Opcional.** | 
+| `jogo/modulo/<ID>/evento` | Módulo $\to$ Central | Não | Sob evento | `SOLVED` (sucesso) ou `ERROR` (falha/strike) | 
+| `jogo/modulo/<ORIG>/dica` | Módulo $\to$ Central | Não | Conforme lógica | Payload puro da dica para a Central rotear aleatoriamente | 
+| `jogo/modulo/<DEST>/dica/<ORIG>` | Módulo/Central $\to$ Módulo | Não | Sob envio/roteamento | Entrega da dica ao `<DEST>` informando quem enviou (`<ORIG>`) | 
 
 ## 3. Detalhamento dos Tópicos
 
@@ -85,7 +85,9 @@ Substitua `<ID>` pelo número do seu grupo (de `2` a `11`).
 
 ### 3.7. Pistas e Dependências (Direta ou Aleatória)
 
-Todo módulo deve assinar `jogo/modulo/<MEU_ID>/dica/+` para receber pistas. O último nível do tópico informa qual grupo enviou o dado, deixando o payload 100% livre para qualquer texto ou formato (ex: coordenadas de labirinto ou códigos).
+O último nível do tópico de entrega informa qual grupo enviou o dado, deixando o payload 100% livre para qualquer texto ou formato (ex: coordenadas de labirinto ou códigos).
+
+#### Como Enviar uma Pista
 
 Existem **duas formas** de um módulo enviar uma pista:
 
@@ -97,7 +99,15 @@ Existem **duas formas** de um módulo enviar uma pista:
    * **Publicar em:** `jogo/modulo/<ID_ORIGEM>/dica`
    * **Exemplo:** Grupo 5 enviando labirinto para qualquer outro grupo disponível $\to$ publica `"3;0,0;5,5"` em `jogo/modulo/5/dica`. A Central sorteia um módulo online diferente de 5 (ex: Grupo 3) e republica em `jogo/modulo/3/dica/5`.
 
-> **Importante para os displays:** Mesmo após o seu módulo enviar `SOLVED`, **mantenha o callback de dicas ativo** e continue exibindo dicas recebidas na tela durante toda a partida (`RUNNING`), pois outros grupos podem precisar consultar a pista no seu display.
+#### Como o Módulo Sabe que Recebeu uma Dica
+
+Como ambos os modos (direto e aleatório) chegam no mesmo formato de tópico, a detecção no módulo receptor segue 3 passos:
+
+1. **Inscrição com curinga (`+`):** Ao conectar no broker, o módulo assina `jogo/modulo/<MEU_ID>/dica/+` para escutar pistas vindas de qualquer grupo.
+2. **Extração no `callbackMqtt`:** Quando uma mensagem chega, o módulo usa `sscanf` no `topic` para extrair o número do grupo remetente (`<ORIGEM>`), salva o conteúdo do payload em um buffer e ativa uma flag booleana (`temDicaNova = true`).
+3. **Reação no `loop()`:** O loop principal detecta `temDicaNova == true`, consome a flag e atualiza o display TFT (ou aciona LED/buzzer) mostrando a dica e qual grupo a enviou.
+
+> **Importante para os displays:** Mesmo após o seu módulo enviar `SOLVED`, **mantenha o `client.loop()` e o callback de dicas ativos** durante toda a partida (`RUNNING`), pois outros grupos podem precisar consultar a pista no seu display.
 
 ## 4. Código de Referência para os Módulos (C++ / Arduino)
 
@@ -111,20 +121,25 @@ Snippet pronto para ESP32 compatível com a biblioteca `PubSubClient`:
 #define MODULO_ID "2"
 #define MODULO_NUM 2
 
-constexpr const char* WIFI_SSID     = "iot2026";
-constexpr const char* WIFI_PASSWORD = "Senhab0@";
-constexpr const char* MQTT_BROKER   = "10.150.207.154";
+constexpr const char* WIFI_SSID     = "iot2022";
+constexpr const char* WIFI_PASSWORD = "S3nhab0@";
+constexpr const char* MQTT_BROKER   = "192.168.2.100";
 constexpr int         MQTT_PORT     = 1883;
 
 WiFiClient espClient;
 PubSubClient client(espClient);
 
 // Variáveis de estado global sincronizadas pela rede
-char serialBomba[8] = "-----";
-int  tempoRestante  = 0;
-bool jogoRodando    = false;
-bool minhaVez       = false;
-bool jaResolvido    = false;
+char serialBomba[8]   = "-----";
+int  tempoRestante    = 0;
+bool jogoRodando      = false;
+bool minhaVez         = false;
+bool jaResolvido      = false;
+
+// Variáveis para detecção de dicas recebidas
+bool temDicaNova      = false;
+int  grupoOrigemDica  = 0;
+char conteudoDica[64] = "";
 
 void callbackMqtt(char* topic, byte* payload, unsigned int length) {
   char msg[length + 1];
@@ -141,12 +156,14 @@ void callbackMqtt(char* topic, byte* payload, unsigned int length) {
     if (strcmp(msg, "START") == 0) {
       jogoRodando = true;
       jaResolvido = false;
+      temDicaNova = false;
       // Resetar variaveis do desafio para nova partida
     } 
     else if (strcmp(msg, "RESET") == 0) {
       jogoRodando = false;
       minhaVez    = false;
       jaResolvido = false;
+      temDicaNova = false;
       // Voltar para tela de espera
     } 
     else if (strcmp(msg, "VICTORY") == 0 || strcmp(msg, "DEFEAT") == 0) {
@@ -182,10 +199,12 @@ void callbackMqtt(char* topic, byte* payload, unsigned int length) {
   // 5. Pistas recebidas (diretas ou roteadas pela Central)
   else {
     int idOrigem = 0;
-    if (sscanf(topic, "jogo/modulo/" MODULO_ID "/dica/%d", &idOrigem) == 1) {
-      // 'idOrigem' informa qual grupo enviou a dica
-      // 'msg' contem o payload puro (ex: labirinto ou codigo)
-      // IMPORTANTE: Exibir no display mesmo se 'jaResolvido == true'!
+    int pos = 0;
+    if (sscanf(topic, "jogo/modulo/" MODULO_ID "/dica/%d%n", &idOrigem, &pos) == 1 && topic[pos] == '\0') {
+      grupoOrigemDica = idOrigem;
+      strncpy(conteudoDica, msg, sizeof(conteudoDica) - 1);
+      conteudoDica[sizeof(conteudoDica) - 1] = '\0';
+      temDicaNova = true; // Sinaliza para o loop() exibir a dica
     }
   }
 }
@@ -254,7 +273,13 @@ void loop() {
   if (!client.connected()) reconectarMQTT();
   client.loop();
 
-  // Exemplo de uso no loop:
+  // Reage a chegada de uma dica (funciona mesmo apos enviar SOLVED)
+  if (temDicaNova) {
+    temDicaNova = false;
+    // Exemplo: exibir 'conteudoDica' e 'grupoOrigemDica' no display TFT
+  }
+
+  // Exemplo de uso da logica do desafio:
   // if (jogoRodando && minhaVez) {
   //   if (jogadorAcertou()) registrarSucesso();
   //   if (jogadorErrou())   registrarErro();
