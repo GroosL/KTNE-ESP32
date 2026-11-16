@@ -5,18 +5,14 @@
 * **Público-alvo:** Grupos 2 a 11 (até 10 módulos simultâneos)
 * **Formato de Dados:** Texto simples (ASCII / Plain Text), sem JSON
 
----
-
 ## 1. Filosofia de Arquitetura
 
 O sistema opera de forma **desacoplada, dinâmica e orientada a eventos**:
 
 * **A Central é um orquestrador cego:** A Central de Controle **não** valida códigos, senhas, medições de sensores ou regras internas de nenhum minijogo. Cada grupo tem total autonomia para gerenciar e validar seus desafios internamente.
 * **Descoberta Dinâmica e Fila Sequencial:** Os módulos anunciam sua presença ao conectar. A Central monta a fila apenas com os grupos realmente online (mesmo que haja saltos na numeração, ex: Grupos 2, 4 e 9) e libera um módulo por vez em ordem crescente.
-* **Roteamento Aleatório de Dicas:** Quando um módulo precisa enviar uma pista (como um labirinto ou código), ele publica para a Central, que sorteia outro módulo online (incluindo os que já foram resolvidos) e entrega a mensagem identificando o remetente no próprio tópico.
+* **Pistas Diretas e Aleatórias:** Os módulos podem enviar pistas diretamente para um grupo específico ou solicitar à Central que sorteie um destinatário aleatório entre os grupos online (incluindo os que já foram resolvidos). Em ambos os casos, o remetente é identificado no próprio tópico.
 * **Tolerância a falhas de rede:** Mensagens de estado e presença usam flag *Retain* e *Last Will and Testament (LWT)*, garantindo que quedas de energia ou reconexões sejam tratadas automaticamente.
-
----
 
 ## 2. Especificação Geral de Tópicos
 
@@ -28,10 +24,8 @@ O sistema opera de forma **desacoplada, dinâmica e orientada a eventos**:
 | `jogo/modulo/ativo` | Central $\to$ Todos | **Sim** | Sob turno / transição | ID do grupo da vez (ex: `2`, `4`, `9`) ou `0` (travado) |
 | `jogo/tempo` | Central $\to$ Todos | Não | 1 Hz (1x por seg) | Inteiro puro com segundos restantes (ex: `299`). **Opcional.** |
 | `jogo/modulo/<ID>/evento` | Módulo $\to$ Central | Não | Sob evento | `SOLVED` (sucesso) ou `ERROR` (falha/strike) |
-| `jogo/modulo/<ID>/dica` | Módulo $\to$ Central | Não | Conforme lógica | Payload puro da dica a ser roteada para um grupo aleatório |
-| `jogo/modulo/<DEST>/dica/<ORIG>` | Central $\to$ Módulo | Não | Sob roteamento | Entrega da dica ao `<DEST>` informando quem enviou (`<ORIG>`) |
-
----
+| `jogo/modulo/<ORIG>/dica` | Módulo $\to$ Central | Não | Conforme lógica | Payload puro da dica para a Central rotear aleatoriamente |
+| `jogo/modulo/<DEST>/dica/<ORIG>` | Módulo/Central $\to$ Módulo | Não | Sob envio/roteamento | Entrega da dica ao `<DEST>` informando quem enviou (`<ORIG>`) |
 
 ## 3. Detalhamento dos Tópicos
 
@@ -42,8 +36,6 @@ Obrigatório para que a Central inclua o módulo na partida e no sorteio de dica
 * **`ONLINE`:** Publicado (com `retain = true`) imediatamente após conectar ao broker.
 * **`OFFLINE`:** Configurado como mensagem de LWT (`retain = true`). Se o ESP32 perder energia ou conexão, o broker avisa a Central automaticamente.
 
----
-
 ### 3.2. Estado Global (`jogo/estado`)
 
 Todos os módulos devem assinar este tópico para controlar sua máquina de estados local.
@@ -52,8 +44,6 @@ Todos os módulos devem assinar este tópico para controlar sua máquina de esta
 * **`RESET`:** Cancela a partida e coloca o módulo em espera (tela inicial).
 * **`VICTORY`:** Desarma o módulo (vitória dos jogadores). Trava interações e exibe mensagem de sucesso.
 * **`DEFEAT`:** Trava o módulo em falha (explosão por tempo esgotado ou excesso de erros).
-
----
 
 ### 3.3. Controle de Turno Sequencial (`jogo/modulo/ativo`)
 
@@ -64,8 +54,6 @@ Os módulos são resolvidos sequencialmente. A Central publica o ID do grupo que
   * Se `ativo == MEU_ID`: Libera os sensores/botões para o jogador interagir.
   * Se `ativo != MEU_ID`: Mantém a interação do desafio bloqueada (aguardando a vez ou já concluído).
   * *Nota:* A Central ignora eventos `SOLVED` ou `ERROR` enviados por módulos que não sejam o ativo atual.
-
----
 
 ### 3.4. Serial da Partida (`jogo/serial`)
 
@@ -79,16 +67,12 @@ Identificador alfanumérico estático sorteado pela Central no início de cada p
      * *Grupo 2 (Teclado):* *"Se o último dígito do serial for ímpar, adicione 2 ao primeiro dígito da senha."*
      * *Grupo 4 (Distância):* *"Se o serial contiver a letra 'B', o alvo é 15 cm; caso contrário, 30 cm."*
 
----
-
 ### 3.5. Sincronização de Tempo (`jogo/tempo`) — *Opcional*
 
 Publicado pela Central a cada 1 segundo enquanto a partida estiver ativa (`RUNNING`).
 
 * **Payload:** String ASCII com o número de segundos (ex: `"300"`, `"299"`, `"59"`).
 * **Uso sugerido:** Atualizar um relógio local ou acelerar bipes de aviso nos últimos 30 segundos.
-
----
 
 ### 3.6. Notificação de Eventos (`jogo/modulo/<ID>/evento`)
 
@@ -99,22 +83,21 @@ Substitua `<ID>` pelo número do seu grupo (de `2` a `11`).
 
 > **Atenção:** Publique apenas quando houver resolução definitiva ou erro confirmado, e somente quando for a vez do seu módulo.
 
----
+### 3.7. Pistas e Dependências (Direta ou Aleatória)
 
-### 3.7. Roteamento Aleatório de Dicas (`dica`)
+Todo módulo deve assinar `jogo/modulo/<MEU_ID>/dica/+` para receber pistas. O último nível do tópico informa qual grupo enviou o dado, deixando o payload 100% livre para qualquer texto ou formato (ex: coordenadas de labirinto ou códigos).
 
-Para cumprir o requisito de dependência cruzada sem acoplar os grupos, a Central atua como roteador aleatório:
+Existem **duas formas** de um módulo enviar uma pista:
 
-1. **Envio (Módulo $\to$ Central):** O módulo publica o conteúdo puro (sem cabeçalhos) no seu próprio tópico:
-   * **Tópico:** `jogo/modulo/<MEU_ID>/dica`
-   * **Payload:** Conteúdo livre (ex: `"3;0,0;5,5"` para coordenadas de labirinto, ou `"8310"`).
-2. **Entrega (Central $\to$ Módulo Aleatório):** A Central sorteia qualquer outro módulo `ONLINE` (incluindo módulos que já enviaram `SOLVED`) e republica:
-   * **Tópico:** `jogo/modulo/<ID_SORTEADO>/dica/<MEU_ID>`
-   * **Payload:** O conteúdo intacto enviado na etapa 1.
+1. **Envio Direto (Para um grupo específico):**
+   * **Publicar em:** `jogo/modulo/<ID_DESTINO>/dica/<ID_ORIGEM>`
+   * **Exemplo:** Grupo 2 enviando senha `8310` especificamente para o Grupo 4 $\to$ publica `"8310"` em `jogo/modulo/4/dica/2` (vai direto pelo broker sem passar pela Central).
+
+2. **Envio Aleatório (A Central escolhe o destinatário online):**
+   * **Publicar em:** `jogo/modulo/<ID_ORIGEM>/dica`
+   * **Exemplo:** Grupo 5 enviando labirinto para qualquer outro grupo disponível $\to$ publica `"3;0,0;5,5"` em `jogo/modulo/5/dica`. A Central sorteia um módulo online diferente de 5 (ex: Grupo 3) e republica em `jogo/modulo/3/dica/5`.
 
 > **Importante para os displays:** Mesmo após o seu módulo enviar `SOLVED`, **mantenha o callback de dicas ativo** e continue exibindo dicas recebidas na tela durante toda a partida (`RUNNING`), pois outros grupos podem precisar consultar a pista no seu display.
-
----
 
 ## 4. Código de Referência para os Módulos (C++ / Arduino)
 
@@ -196,7 +179,7 @@ void callbackMqtt(char* topic, byte* payload, unsigned int length) {
     tempoRestante = atoi(msg);
   }
 
-  // 5. Pistas roteadas pela Central vindas de outro módulo
+  // 5. Pistas recebidas (diretas ou roteadas pela Central)
   else {
     int idOrigem = 0;
     if (sscanf(topic, "jogo/modulo/" MODULO_ID "/dica/%d", &idOrigem) == 1) {
@@ -245,6 +228,15 @@ void registrarErro() {
   client.publish("jogo/modulo/" MODULO_ID "/evento", "ERROR");
 }
 
+// Envia dica diretamente para um grupo especifico
+void enviarDicaDireta(int destino, const char* conteudo) {
+  if (!jogoRodando) return;
+  char topico[36];
+  snprintf(topico, sizeof(topico), "jogo/modulo/%d/dica/" MODULO_ID, destino);
+  client.publish(topico, conteudo);
+}
+
+// Envia dica para a Central rotear a um grupo aleatorio online
 void enviarDicaAleatoria(const char* conteudo) {
   if (!jogoRodando) return;
   client.publish("jogo/modulo/" MODULO_ID "/dica", conteudo);
