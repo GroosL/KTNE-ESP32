@@ -554,7 +554,7 @@ loop(void)
   mqttClient.loop();
 
   if (digitalRead(BTN_START) == LOW) {
-    if (state == LOBBY && qtdModulos > 0) {
+    if (state == LOBBY && qtdModulos > 1) {
       changeState(RUNNING);
       delay(300);
     }
